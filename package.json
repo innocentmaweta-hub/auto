@@ -6,7 +6,7 @@
   "scripts": {
     "start": "electron .",
     "dev": "electron .",
-    "build:win": "electron-builder --win"
+    "build:win": "electron-builder --win --publish never"
   },
   "dependencies": {
     "playwright": "^1.55.0"
