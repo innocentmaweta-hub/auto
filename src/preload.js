@@ -4,6 +4,7 @@ contextBridge.exposeInMainWorld('auto', {
   startRecording: url => ipcRenderer.invoke('start-recording', url),
   stopRecording: () => ipcRenderer.invoke('stop-recording'),
   runWorkflow: repeats => ipcRenderer.invoke('run-workflow', repeats),
+  stopAutomation: () => ipcRenderer.invoke('stop-automation'),
   stopBrowser: () => ipcRenderer.invoke('stop-browser'),
   getWorkflow: () => ipcRenderer.invoke('get-workflow'),
   saveWorkflow: data => ipcRenderer.invoke('save-workflow', data),
