@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Auto — Browser Automation</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Auto</h1>
+      <p>Record browser actions. Replay them automatically.</p>
+    </div>
+    <span id="status" class="status">Ready</span>
+  </header>
+
+  <main>
+    <section class="card controls">
+      <label>Starting URL</label>
+      <div class="row">
+        <input id="url" value="https://example.com" placeholder="https://example.com" />
+        <button id="record">● Record</button>
+        <button id="stop" class="secondary">Stop</button>
+      </div>
+      <div class="row second">
+        <label class="repeat-label">Repeat</label>
+        <input id="repeats" type="number" min="1" value="1" />
+        <button id="continuous" class="secondary">Until stopped</button>
+        <button id="run">▶ Run</button>
+        <button id="save" class="secondary">Save workflow</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="section-title"><h2>Recorded workflow</h2><span id="count">0 steps</span></div>
+      <div id="steps" class="steps"><div class="empty">No steps recorded yet. Click Record, then use the browser normally.</div></div>
+    </section>
+
+    <section class="card log-card">
+      <div class="section-title"><h2>Activity</h2></div>
+      <div id="log" class="log"></div>
+    </section>
+  </main>
+
+  <script src="renderer.js"></script>
+</body>
+</html>
