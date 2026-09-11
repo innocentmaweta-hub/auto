@@ -1,6 +1,6 @@
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
-const { chromium } = require('playwright');
+const { firefox } = require('playwright');
 
 let win;
 let browser;
@@ -60,28 +60,28 @@ async function injectRecorder() {
   });
 }
 
-function getInstalledBrowserChannel() {
-  // Use a browser already installed on Windows instead of bundling a second
-  // Chromium copy with Auto. Edge is present on supported Windows installs;
-  // Chrome is used when available instead.
-  if (process.platform === 'win32') return 'msedge';
-  return 'chrome';
-}
+async function launchTorBrowser() {
+  const torPaths = process.platform === 'win32'
+    ? [
+        path.join(process.env.PORTABLE_DATA || '', 'Tor Browser', 'Browser', 'firefox.exe'),
+        path.join(process.env.LOCALAPPDATA || '', 'Tor Browser', 'Browser', 'firefox.exe'),
+        path.join(process.env.APPDATA || '', 'Tor Browser', 'Browser', 'firefox.exe'),
+        'C:\\Program Files\\Tor Browser\\Browser\\firefox.exe',
+        'C:\\Program Files (x86)\\Tor Browser\\Browser\\firefox.exe'
+      ]
+    : [];
 
-async function launchBrowser() {
-  try {
-    return await chromium.launch({ headless: false, channel: getInstalledBrowserChannel() });
-  } catch (firstError) {
-    if (process.platform === 'win32') {
-      try { return await chromium.launch({ headless: false, channel: 'chrome' }); } catch (_) {}
-    }
-    throw new Error('No supported installed browser was found. Please install Microsoft Edge or Google Chrome.');
+  const executablePath = torPaths.find(p => p && require('fs').existsSync(p));
+  if (!executablePath) {
+    throw new Error('Tor Browser was not found. Install Tor Browser or place it in a standard Windows installation location.');
   }
+
+  return firefox.launch({ headless: false, executablePath });
 }
 
 async function startBrowser(url) {
   if (browser) await browser.close().catch(() => {});
-  browser = await launchBrowser();
+  browser = await launchTorBrowser();
   context = await browser.newContext();
   page = await context.newPage();
   page.on('framenavigated', frame => {
@@ -93,11 +93,11 @@ async function startBrowser(url) {
   });
   await injectRecorder();
   await page.goto(url || 'https://example.com', { waitUntil: 'domcontentloaded' });
-  send('browser-status', 'Browser ready');
+  send('browser-status', 'Tor Browser ready');
 }
 
 async function runStep(step) {
-  if (!page) throw new Error('Browser is not running');
+  if (!page) throw new Error('Tor Browser is not running');
   if (step.type === 'navigate') return page.goto(step.url, { waitUntil: 'domcontentloaded', timeout: 30000 });
   if (step.type === 'click') return page.locator(step.selector).first().click({ timeout: 15000 });
   if (step.type === 'fill') return page.locator(step.selector).first().fill(step.value ?? '', { timeout: 15000 });
@@ -130,7 +130,7 @@ ipcMain.handle('start-recording', async (_, url) => { workflow = []; recording =
 ipcMain.handle('stop-recording', async () => { recording = false; send('recording-state', false); return workflow; });
 ipcMain.handle('run-workflow', async (_, repeats) => { try { await replay(repeats); return { ok: true }; } catch (e) { running = false; send('automation-error', e.message); return { ok: false, error: e.message }; } });
 ipcMain.handle('stop-automation', async () => { stopRequested = true; send('run-status', { running: false, stopped: true }); return true; });
-ipcMain.handle('stop-browser', async () => { recording = false; stopRequested = true; if (browser) await browser.close().catch(() => {}); browser = context = page = null; send('browser-status', 'Browser stopped'); });
+ipcMain.handle('stop-browser', async () => { recording = false; stopRequested = true; if (browser) await browser.close().catch(() => {}); browser = context = page = null; send('browser-status', 'Tor Browser stopped'); });
 ipcMain.handle('get-workflow', () => workflow);
 ipcMain.handle('save-workflow', async (_, data) => { const result = await dialog.showSaveDialog(win, { defaultPath: 'workflow.json', filters: [{ name: 'Auto Workflow', extensions: ['json'] }] }); if (!result.canceled) require('fs').writeFileSync(result.filePath, JSON.stringify(data, null, 2)); return result; });
 
