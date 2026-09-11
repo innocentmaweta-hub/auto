@@ -9,7 +9,7 @@
     "build:win": "electron-builder --win --publish never"
   },
   "dependencies": {
-    "playwright": "^1.55.0"
+    "puppeteer-core": "^25.10.0"
   },
   "devDependencies": {
     "electron": "^38.1.0",
