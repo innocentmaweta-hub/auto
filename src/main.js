@@ -2,6 +2,7 @@ const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const puppeteer = require('puppeteer-core');
+const http = require('http');
 
 let win;
 let browser;
@@ -11,6 +12,7 @@ let running = false;
 let stopRequested = false;
 let workflow = [];
 let recorderTimer;
+let browserOwnedByAuto = false;
 
 function createWindow() {
   win = new BrowserWindow({ width: 1100, height: 760, minWidth: 900, minHeight: 600, webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false } });
@@ -52,6 +54,53 @@ function getTorEnvironment(executablePath) {
   env.PATH = [torDir, browserDir, process.env.PATH || ''].filter(Boolean).join(';');
   env.HOME = root;
   return env;
+}
+
+function getTorExecutablePath() {
+  return getTorBrowserCandidates().find(p => fs.existsSync(p)) || null;
+}
+
+function checkLocalPort(port, timeout = 250) {
+  return new Promise(resolve => {
+    const req = http.get({ hostname: '127.0.0.1', port, path: '/', timeout }, res => {
+      res.resume();
+      resolve(true);
+    });
+    req.on('error', () => resolve(false));
+    req.on('timeout', () => { req.destroy(); resolve(false); });
+  });
+}
+
+async function findExistingTorEndpoint() {
+  // A normally-open Tor Browser does not expose automation automatically.
+  // If it was started with WebDriver BiDi remote debugging, try the common
+  // local ports first. We only connect to localhost and never close an
+  // already-running browser that Auto did not launch.
+  const ports = [];
+  const configured = Number(process.env.AUTO_TOR_DEBUG_PORT || 9222);
+  for (let port = configured; port <= configured + 10; port++) ports.push(port);
+
+  for (const port of ports) {
+    if (!(await checkLocalPort(port))) continue;
+    const endpoints = [
+      `ws://127.0.0.1:${port}/session`,
+      `ws://localhost:${port}/session`
+    ];
+    for (const browserWSEndpoint of endpoints) {
+      try {
+        const connected = await Promise.race([
+          puppeteer.connect({ protocol: 'webDriverBiDi', browserWSEndpoint, protocolTimeout: 5000 }),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('connection timeout')), 3000))
+        ]);
+        if (connected) {
+          return { browser: connected, port, endpoint: browserWSEndpoint };
+        }
+      } catch (_) {
+        // This port is not a compatible Tor BiDi endpoint; continue scanning.
+      }
+    }
+  }
+  return null;
 }
 
 async function injectRecorder() {
@@ -98,7 +147,7 @@ async function injectRecorder() {
 }
 
 async function launchTorBrowser() {
-  let executablePath = getTorBrowserCandidates().find(p => fs.existsSync(p));
+  let executablePath = getTorExecutablePath();
   if (!executablePath) {
     const result = await dialog.showOpenDialog(win, {
       title: 'Select Tor Browser executable',
@@ -126,16 +175,36 @@ async function launchTorBrowser() {
       defaultViewport: null,
       timeout: 30000
     });
+    browserOwnedByAuto = true;
+    send('browser-status', 'Started a new Tor Browser session');
     return launched;
   } catch (error) {
     throw new Error(`Could not start Tor Browser from ${executablePath}. ${error.message}`);
   }
 }
 
+async function getOrStartTorBrowser() {
+  if (browser) return browser;
+
+  const existing = await findExistingTorEndpoint();
+  if (existing) {
+    browserOwnedByAuto = false;
+    send('browser-status', `Connected to existing Tor Browser on port ${existing.port}`);
+    return existing.browser;
+  }
+
+  return launchTorBrowser();
+}
+
 async function startBrowser(url) {
-  if (browser) await browser.close().catch(() => {});
-  browser = await launchTorBrowser();
-  page = await browser.newPage();
+  if (browser) {
+    if (browserOwnedByAuto) await browser.close().catch(() => {});
+    else browser.disconnect?.();
+  }
+
+  browser = await getOrStartTorBrowser();
+  const pages = await browser.pages();
+  page = pages[0] || await browser.newPage();
   await injectRecorder();
   page.on('framenavigated', frame => {
     if (frame === page.mainFrame() && recording) {
@@ -144,8 +213,13 @@ async function startBrowser(url) {
       send('recorded-step', event);
     }
   });
-  await page.goto(url || 'https://example.com', { waitUntil: 'domcontentloaded', timeout: 30000 });
-  send('browser-status', 'Tor Browser ready');
+
+  if (url && page.url() !== url) {
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+  } else if (!page.url() || page.url() === 'about:blank') {
+    await page.goto(url || 'https://example.com', { waitUntil: 'domcontentloaded', timeout: 30000 });
+  }
+  send('browser-status', browserOwnedByAuto ? 'Tor Browser ready' : 'Existing Tor Browser ready');
 }
 
 async function runStep(step) {
@@ -194,9 +268,26 @@ ipcMain.handle('start-recording', async (_, url) => {
 ipcMain.handle('stop-recording', async () => { recording = false; send('recording-state', false); return workflow; });
 ipcMain.handle('run-workflow', async (_, repeats) => { try { await replay(repeats); return { ok: true }; } catch (e) { running = false; send('automation-error', e.message); return { ok: false, error: e.message }; } });
 ipcMain.handle('stop-automation', async () => { stopRequested = true; send('run-status', { running: false, stopped: true }); return true; });
-ipcMain.handle('stop-browser', async () => { recording = false; stopRequested = true; if (browser) await browser.close().catch(() => {}); browser = page = null; send('browser-status', 'Tor Browser stopped'); });
+ipcMain.handle('stop-browser', async () => {
+  recording = false;
+  stopRequested = true;
+  if (browser) {
+    if (browserOwnedByAuto) await browser.close().catch(() => {});
+    else browser.disconnect?.();
+  }
+  browser = page = null;
+  browserOwnedByAuto = false;
+  send('browser-status', 'Auto disconnected from Tor Browser');
+  return true;
+});
 ipcMain.handle('get-workflow', () => workflow);
 ipcMain.handle('save-workflow', async (_, data) => { const result = await dialog.showSaveDialog(win, { defaultPath: 'workflow.json', filters: [{ name: 'Auto Workflow', extensions: ['json'] }] }); if (!result.canceled) require('fs').writeFileSync(result.filePath, JSON.stringify(data, null, 2)); return result; });
 
 app.whenReady().then(createWindow);
-app.on('window-all-closed', async () => { if (browser) await browser.close().catch(() => {}); if (process.platform !== 'darwin') app.quit(); });
+app.on('window-all-closed', async () => {
+  if (browser) {
+    if (browserOwnedByAuto) await browser.close().catch(() => {});
+    else browser.disconnect?.();
+  }
+  if (process.platform !== 'darwin') app.quit();
+});
