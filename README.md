@@ -16,9 +16,26 @@ Auto is a Windows desktop browser-automation recorder built with Electron and Pl
 
 The recorder stores selectors and actions rather than relying only on mouse coordinates, making recorded workflows more reusable across runs.
 
-## First setup on Windows
+## Use the Windows build without installing Node.js
 
-Install Node.js 20+ from the official Node.js website, then in this repository run:
+The repository now has a GitHub Actions Windows build. Every push to `main` builds the Windows application and uploads it as a GitHub Actions artifact.
+
+To get the latest build:
+
+1. Open the repository on GitHub.
+2. Open **Actions**.
+3. Select **Build Auto for Windows**.
+4. Open the latest successful workflow run.
+5. Download the **Auto-Windows** artifact.
+6. Extract it and run the generated Windows installer.
+
+The build process installs the Playwright Chromium browser into the application package, so the end user does not need to run `npm install` or `npx playwright install chromium`.
+
+You can also manually trigger a build from **Actions → Build Auto for Windows → Run workflow**.
+
+## Local development
+
+If you want to develop the source locally, install Node.js 20+ and run:
 
 ```bash
 npm install
@@ -26,7 +43,7 @@ npx playwright install chromium
 npm start
 ```
 
-For a Windows installer:
+For a local Windows installer:
 
 ```bash
 npm run build:win
@@ -43,6 +60,7 @@ The installer will be placed in `dist/`.
 - Continuous replay with a stop control
 - Save workflows to JSON
 - Password fields are not recorded by default
+- GitHub Actions Windows build
 
 ## Important limitation
 
