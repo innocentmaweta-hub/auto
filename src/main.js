@@ -1,5 +1,6 @@
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
+const fs = require('fs');
 const { firefox } = require('playwright');
 
 let win;
@@ -60,23 +61,49 @@ async function injectRecorder() {
   });
 }
 
-async function launchTorBrowser() {
-  const torPaths = process.platform === 'win32'
-    ? [
-        path.join(process.env.PORTABLE_DATA || '', 'Tor Browser', 'Browser', 'firefox.exe'),
-        path.join(process.env.LOCALAPPDATA || '', 'Tor Browser', 'Browser', 'firefox.exe'),
-        path.join(process.env.APPDATA || '', 'Tor Browser', 'Browser', 'firefox.exe'),
-        'C:\\Program Files\\Tor Browser\\Browser\\firefox.exe',
-        'C:\\Program Files (x86)\\Tor Browser\\Browser\\firefox.exe'
-      ]
-    : [];
+function getTorBrowserCandidates() {
+  if (process.platform !== 'win32') return [];
 
-  const executablePath = torPaths.find(p => p && require('fs').existsSync(p));
+  const home = process.env.USERPROFILE || process.env.HOME || '';
+  const candidates = [
+    path.join(home, 'Desktop', 'Tor Browser', 'Browser', 'firefox.exe'),
+    path.join(home, 'Downloads', 'Tor Browser', 'Browser', 'firefox.exe'),
+    path.join(home, 'Documents', 'Tor Browser', 'Browser', 'firefox.exe'),
+    path.join(process.env.LOCALAPPDATA || '', 'Tor Browser', 'Browser', 'firefox.exe'),
+    path.join(process.env.APPDATA || '', 'Tor Browser', 'Browser', 'firefox.exe'),
+    path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Tor Browser', 'Browser', 'firefox.exe'),
+    path.join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'Tor Browser', 'Browser', 'firefox.exe'),
+    'C:\\Tor Browser\\Browser\\firefox.exe',
+    path.join(process.env.PORTABLE_DATA || '', 'Tor Browser', 'Browser', 'firefox.exe')
+  ];
+
+  return [...new Set(candidates.filter(Boolean))];
+}
+
+async function launchTorBrowser() {
+  let executablePath = getTorBrowserCandidates().find(p => fs.existsSync(p));
+
   if (!executablePath) {
-    throw new Error('Tor Browser was not found. Install Tor Browser or place it in a standard Windows installation location.');
+    const result = await dialog.showOpenDialog(win, {
+      title: 'Select Tor Browser executable',
+      properties: ['openFile'],
+      filters: [{ name: 'Tor Browser / Firefox executable', extensions: ['exe'] }]
+    });
+
+    if (result.canceled || !result.filePaths?.[0]) {
+      throw new Error('Tor Browser executable was not selected.');
+    }
+
+    executablePath = result.filePaths[0];
   }
 
-  return firefox.launch({ headless: false, executablePath });
+  send('browser-status', `Starting Tor Browser: ${executablePath}`);
+
+  try {
+    return await firefox.launch({ headless: false, executablePath });
+  } catch (error) {
+    throw new Error(`Could not start Tor Browser from ${executablePath}. ${error.message}`);
+  }
 }
 
 async function startBrowser(url) {
@@ -126,7 +153,19 @@ async function replay(repeats) {
   send('run-status', { running: false, iteration: 0, total: repeats, stopped: stopRequested });
 }
 
-ipcMain.handle('start-recording', async (_, url) => { workflow = []; recording = true; await startBrowser(url); send('recording-state', true); return true; });
+ipcMain.handle('start-recording', async (_, url) => {
+  try {
+    workflow = [];
+    recording = true;
+    await startBrowser(url);
+    send('recording-state', true);
+    return true;
+  } catch (e) {
+    recording = false;
+    send('recording-state', false);
+    throw e;
+  }
+});
 ipcMain.handle('stop-recording', async () => { recording = false; send('recording-state', false); return workflow; });
 ipcMain.handle('run-workflow', async (_, repeats) => { try { await replay(repeats); return { ok: true }; } catch (e) { running = false; send('automation-error', e.message); return { ok: false, error: e.message }; } });
 ipcMain.handle('stop-automation', async () => { stopRequested = true; send('run-status', { running: false, stopped: true }); return true; });
