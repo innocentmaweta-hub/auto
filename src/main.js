@@ -60,9 +60,28 @@ async function injectRecorder() {
   });
 }
 
+function getInstalledBrowserChannel() {
+  // Use a browser already installed on Windows instead of bundling a second
+  // Chromium copy with Auto. Edge is present on supported Windows installs;
+  // Chrome is used when available instead.
+  if (process.platform === 'win32') return 'msedge';
+  return 'chrome';
+}
+
+async function launchBrowser() {
+  try {
+    return await chromium.launch({ headless: false, channel: getInstalledBrowserChannel() });
+  } catch (firstError) {
+    if (process.platform === 'win32') {
+      try { return await chromium.launch({ headless: false, channel: 'chrome' }); } catch (_) {}
+    }
+    throw new Error('No supported installed browser was found. Please install Microsoft Edge or Google Chrome.');
+  }
+}
+
 async function startBrowser(url) {
   if (browser) await browser.close().catch(() => {});
-  browser = await chromium.launch({ headless: false });
+  browser = await launchBrowser();
   context = await browser.newContext();
   page = await context.newPage();
   page.on('framenavigated', frame => {
