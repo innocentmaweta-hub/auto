@@ -1,0 +1,20 @@
+* { box-sizing: border-box; }
+body { margin: 0; font-family: Inter, Arial, sans-serif; background: #f5f7fb; color: #172033; }
+header { height: 86px; padding: 18px 30px; background: #111827; color: white; display: flex; align-items: center; justify-content: space-between; }
+h1 { margin: 0; font-size: 28px; } header p { margin: 4px 0 0; opacity: .7; }
+main { max-width: 1050px; margin: 24px auto; padding: 0 20px; display: grid; gap: 18px; }
+.card { background: white; border: 1px solid #e4e8ef; border-radius: 14px; padding: 20px; box-shadow: 0 5px 20px rgba(20,30,50,.04); }
+label { display: block; font-size: 13px; font-weight: 700; margin-bottom: 7px; color: #596579; }
+.row { display: flex; gap: 10px; align-items: center; } .second { margin-top: 15px; }
+input { flex: 1; min-width: 0; border: 1px solid #ccd3df; border-radius: 9px; padding: 11px 12px; font-size: 14px; outline: none; } input:focus { border-color: #5267ff; }
+button { border: 0; border-radius: 9px; padding: 11px 16px; font-weight: 700; cursor: pointer; background: #5267ff; color: white; white-space: nowrap; }
+button.secondary { background: #edf0f5; color: #303a4d; } button:hover { filter: brightness(.96); }
+.repeat-label { margin: 0; } #repeats { flex: 0 0 100px; } .status { padding: 7px 12px; border-radius: 999px; background: #e8edf4; color: #465268; font-size: 12px; font-weight: 700; }
+.status.recording { background: #ffe3e3; color: #b42318; } .status.error { background: #fff0d6; color: #9a5b00; }
+.section-title { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; } h2 { font-size: 17px; margin: 0; }
+#count { font-size: 12px; color: #738096; } .steps { border: 1px solid #e7ebf1; border-radius: 10px; overflow: hidden; }
+.step { display: grid; grid-template-columns: 38px 90px 1fr; gap: 10px; padding: 12px; border-bottom: 1px solid #edf0f4; align-items: center; } .step:last-child { border: 0; }
+.num { color: #778399; font-size: 12px; text-align: center; } .type { font-size: 11px; text-transform: uppercase; font-weight: 800; color: #5267ff; } .desc { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.empty { padding: 28px; text-align: center; color: #8490a3; font-size: 13px; } .log { max-height: 130px; overflow: auto; font: 12px Consolas, monospace; color: #5c687b; }
+.log div { padding: 4px 0; border-bottom: 1px solid #f0f2f5; }
+@media (max-width: 750px) { .row { flex-wrap: wrap; } .row input { flex-basis: 100%; } }
