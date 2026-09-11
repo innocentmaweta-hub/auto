@@ -1,0 +1,25 @@
+{
+  "name": "auto-browser-automation",
+  "version": "0.1.0",
+  "description": "Desktop browser action recorder and replay tool",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron .",
+    "build:win": "electron-builder --win"
+  },
+  "dependencies": {
+    "playwright": "^1.55.0"
+  },
+  "devDependencies": {
+    "electron": "^38.1.0",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "com.ceographix.auto",
+    "productName": "Auto",
+    "files": ["src/**/*", "package.json"],
+    "directories": { "output": "dist" },
+    "win": { "target": "nsis", "artifactName": "Auto-Setup-${version}.${ext}" }
+  }
+}
