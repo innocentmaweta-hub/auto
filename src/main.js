@@ -1,22 +1,58 @@
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
-const { firefox } = require('playwright');
+const puppeteer = require('puppeteer-core');
 
 let win;
 let browser;
-let context;
 let page;
 let recording = false;
 let running = false;
 let stopRequested = false;
 let workflow = [];
+let recorderTimer;
 
 function createWindow() {
   win = new BrowserWindow({ width: 1100, height: 760, minWidth: 900, minHeight: 600, webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false } });
   win.loadFile(path.join(__dirname, 'index.html'));
 }
 function send(channel, data) { if (win && !win.isDestroyed()) win.webContents.send(channel, data); }
+
+function getTorBrowserCandidates() {
+  if (process.platform !== 'win32') return [];
+  const home = process.env.USERPROFILE || process.env.HOME || '';
+  const candidates = [
+    path.join(home, 'Desktop', 'Tor Browser', 'Browser', 'firefox.exe'),
+    path.join(home, 'Downloads', 'Tor Browser', 'Browser', 'firefox.exe'),
+    path.join(home, 'Documents', 'Tor Browser', 'Browser', 'firefox.exe'),
+    path.join(process.env.LOCALAPPDATA || '', 'Tor Browser', 'Browser', 'firefox.exe'),
+    path.join(process.env.APPDATA || '', 'Tor Browser', 'Browser', 'firefox.exe'),
+    path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Tor Browser', 'Browser', 'firefox.exe'),
+    path.join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'Tor Browser', 'Browser', 'firefox.exe'),
+    'C:\\Tor Browser\\Browser\\firefox.exe'
+  ];
+  return [...new Set(candidates.filter(Boolean))];
+}
+
+function getTorRoot(executablePath) {
+  return path.resolve(path.dirname(executablePath), '..');
+}
+
+function getTorProfile(executablePath) {
+  const root = getTorRoot(executablePath);
+  const profile = path.join(root, 'Browser', 'TorBrowser', 'Data', 'Browser', 'profile.default');
+  return fs.existsSync(profile) ? profile : null;
+}
+
+function getTorEnvironment(executablePath) {
+  const root = getTorRoot(executablePath);
+  const browserDir = path.dirname(executablePath);
+  const torDir = path.join(root, 'Browser', 'TorBrowser', 'Tor');
+  const env = { ...process.env };
+  env.PATH = [torDir, browserDir, process.env.PATH || ''].filter(Boolean).join(';');
+  env.HOME = root;
+  return env;
+}
 
 async function injectRecorder() {
   if (!page) return;
@@ -25,7 +61,7 @@ async function injectRecorder() {
     workflow.push(event);
     send('recorded-step', event);
   });
-  await page.addInitScript(() => {
+  await page.evaluateOnNewDocument(() => {
     const getSelector = el => {
       if (!el || !(el instanceof Element)) return null;
       if (el.id) return `#${CSS.escape(el.id)}`;
@@ -61,46 +97,36 @@ async function injectRecorder() {
   });
 }
 
-function getTorBrowserCandidates() {
-  if (process.platform !== 'win32') return [];
-
-  const home = process.env.USERPROFILE || process.env.HOME || '';
-  const candidates = [
-    path.join(home, 'Desktop', 'Tor Browser', 'Browser', 'firefox.exe'),
-    path.join(home, 'Downloads', 'Tor Browser', 'Browser', 'firefox.exe'),
-    path.join(home, 'Documents', 'Tor Browser', 'Browser', 'firefox.exe'),
-    path.join(process.env.LOCALAPPDATA || '', 'Tor Browser', 'Browser', 'firefox.exe'),
-    path.join(process.env.APPDATA || '', 'Tor Browser', 'Browser', 'firefox.exe'),
-    path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Tor Browser', 'Browser', 'firefox.exe'),
-    path.join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'Tor Browser', 'Browser', 'firefox.exe'),
-    'C:\\Tor Browser\\Browser\\firefox.exe',
-    path.join(process.env.PORTABLE_DATA || '', 'Tor Browser', 'Browser', 'firefox.exe')
-  ];
-
-  return [...new Set(candidates.filter(Boolean))];
-}
-
 async function launchTorBrowser() {
   let executablePath = getTorBrowserCandidates().find(p => fs.existsSync(p));
-
   if (!executablePath) {
     const result = await dialog.showOpenDialog(win, {
       title: 'Select Tor Browser executable',
       properties: ['openFile'],
       filters: [{ name: 'Tor Browser / Firefox executable', extensions: ['exe'] }]
     });
-
-    if (result.canceled || !result.filePaths?.[0]) {
-      throw new Error('Tor Browser executable was not selected.');
-    }
-
+    if (result.canceled || !result.filePaths?.[0]) throw new Error('Tor Browser executable was not selected.');
     executablePath = result.filePaths[0];
   }
 
   send('browser-status', `Starting Tor Browser: ${executablePath}`);
 
+  const profile = getTorProfile(executablePath);
+  const args = [];
+  if (profile) args.push('-profile', profile);
+
   try {
-    return await firefox.launch({ headless: false, executablePath });
+    const launched = await puppeteer.launch({
+      browser: 'firefox',
+      protocol: 'webDriverBiDi',
+      executablePath,
+      headless: false,
+      env: getTorEnvironment(executablePath),
+      args,
+      defaultViewport: null,
+      timeout: 30000
+    });
+    return launched;
   } catch (error) {
     throw new Error(`Could not start Tor Browser from ${executablePath}. ${error.message}`);
   }
@@ -109,8 +135,8 @@ async function launchTorBrowser() {
 async function startBrowser(url) {
   if (browser) await browser.close().catch(() => {});
   browser = await launchTorBrowser();
-  context = await browser.newContext();
-  page = await context.newPage();
+  page = await browser.newPage();
+  await injectRecorder();
   page.on('framenavigated', frame => {
     if (frame === page.mainFrame() && recording) {
       const event = { type: 'navigate', url: frame.url(), at: Date.now() };
@@ -118,8 +144,7 @@ async function startBrowser(url) {
       send('recorded-step', event);
     }
   });
-  await injectRecorder();
-  await page.goto(url || 'https://example.com', { waitUntil: 'domcontentloaded' });
+  await page.goto(url || 'https://example.com', { waitUntil: 'domcontentloaded', timeout: 30000 });
   send('browser-status', 'Tor Browser ready');
 }
 
@@ -129,7 +154,7 @@ async function runStep(step) {
   if (step.type === 'click') return page.locator(step.selector).first().click({ timeout: 15000 });
   if (step.type === 'fill') return page.locator(step.selector).first().fill(step.value ?? '', { timeout: 15000 });
   if (step.type === 'select') return page.locator(step.selector).first().selectOption(step.value, { timeout: 15000 });
-  if (step.type === 'scroll') return page.evaluate(({x,y}) => window.scrollTo(x,y), { x: step.x || 0, y: step.y || 0 });
+  if (step.type === 'scroll') return page.evaluate(({ x, y }) => window.scrollTo(x, y), { x: step.x || 0, y: step.y || 0 });
   if (step.type === 'wait') return new Promise(r => setTimeout(r, step.ms || 1000));
 }
 
@@ -169,7 +194,7 @@ ipcMain.handle('start-recording', async (_, url) => {
 ipcMain.handle('stop-recording', async () => { recording = false; send('recording-state', false); return workflow; });
 ipcMain.handle('run-workflow', async (_, repeats) => { try { await replay(repeats); return { ok: true }; } catch (e) { running = false; send('automation-error', e.message); return { ok: false, error: e.message }; } });
 ipcMain.handle('stop-automation', async () => { stopRequested = true; send('run-status', { running: false, stopped: true }); return true; });
-ipcMain.handle('stop-browser', async () => { recording = false; stopRequested = true; if (browser) await browser.close().catch(() => {}); browser = context = page = null; send('browser-status', 'Tor Browser stopped'); });
+ipcMain.handle('stop-browser', async () => { recording = false; stopRequested = true; if (browser) await browser.close().catch(() => {}); browser = page = null; send('browser-status', 'Tor Browser stopped'); });
 ipcMain.handle('get-workflow', () => workflow);
 ipcMain.handle('save-workflow', async (_, data) => { const result = await dialog.showSaveDialog(win, { defaultPath: 'workflow.json', filters: [{ name: 'Auto Workflow', extensions: ['json'] }] }); if (!result.canceled) require('fs').writeFileSync(result.filePath, JSON.stringify(data, null, 2)); return result; });
 
