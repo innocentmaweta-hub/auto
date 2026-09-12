@@ -161,17 +161,17 @@ async function injectRecorder() {
 }
 
 async function launchTorBrowser() {
-  const executablePath = getTorExecutablePath();
-  if (!executablePath) {
+  let firefoxPath = getTorExecutablePath();
+  if (!firefoxPath) {
     const result = await dialog.showOpenDialog(win, {
       title: 'Select Tor Browser executable',
       properties: ['openFile'],
       filters: [{ name: 'Tor Browser / Firefox executable', extensions: ['exe'] }]
     });
     if (result.canceled || !result.filePaths?.[0]) throw new Error('Tor Browser executable was not selected.');
+    firefoxPath = result.filePaths[0];
   }
 
-  const firefoxPath = getTorExecutablePath() || executablePath;
   const root = getTorRoot(firefoxPath);
   const launcherPath = getTorLauncherCandidates(firefoxPath).find(p => fs.existsSync(p));
   if (!launcherPath) {
