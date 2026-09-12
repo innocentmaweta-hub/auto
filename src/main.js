@@ -1,6 +1,7 @@
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const { spawn } = require('child_process');
 const puppeteer = require('puppeteer-core');
 const http = require('http');
 
@@ -13,6 +14,7 @@ let stopRequested = false;
 let workflow = [];
 let recorderTimer;
 let browserOwnedByAuto = false;
+let torLauncherProcess;
 
 function createWindow() {
   win = new BrowserWindow({ width: 1100, height: 760, minWidth: 900, minHeight: 600, webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false } });
@@ -60,6 +62,16 @@ function getTorExecutablePath() {
   return getTorBrowserCandidates().find(p => fs.existsSync(p)) || null;
 }
 
+function getTorLauncherCandidates(executablePath) {
+  const root = getTorRoot(executablePath);
+  return [
+    path.join(root, 'Start Tor Browser.exe'),
+    path.join(root, 'start-tor-browser.exe'),
+    path.join(root, 'Browser', 'start-tor-browser.exe'),
+    path.join(root, 'Browser', 'start-tor-browser')
+  ];
+}
+
 function checkLocalPort(port, timeout = 250) {
   return new Promise(resolve => {
     const req = http.get({ hostname: '127.0.0.1', port, path: '/', timeout }, res => {
@@ -72,10 +84,6 @@ function checkLocalPort(port, timeout = 250) {
 }
 
 async function findExistingTorEndpoint() {
-  // A normally-open Tor Browser does not expose automation automatically.
-  // If it was started with WebDriver BiDi remote debugging, try the common
-  // local ports first. We only connect to localhost and never close an
-  // already-running browser that Auto did not launch.
   const ports = [];
   const configured = Number(process.env.AUTO_TOR_DEBUG_PORT || 9222);
   for (let port = configured; port <= configured + 10; port++) ports.push(port);
@@ -92,13 +100,19 @@ async function findExistingTorEndpoint() {
           puppeteer.connect({ protocol: 'webDriverBiDi', browserWSEndpoint, protocolTimeout: 5000 }),
           new Promise((_, reject) => setTimeout(() => reject(new Error('connection timeout')), 3000))
         ]);
-        if (connected) {
-          return { browser: connected, port, endpoint: browserWSEndpoint };
-        }
-      } catch (_) {
-        // This port is not a compatible Tor BiDi endpoint; continue scanning.
-      }
+        if (connected) return { browser: connected, port, endpoint: browserWSEndpoint };
+      } catch (_) {}
     }
+  }
+  return null;
+}
+
+async function waitForTorEndpoint(timeoutMs = 60000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    const existing = await findExistingTorEndpoint();
+    if (existing) return existing;
+    await new Promise(r => setTimeout(r, 750));
   }
   return null;
 }
@@ -114,16 +128,16 @@ async function injectRecorder() {
     const getSelector = el => {
       if (!el || !(el instanceof Element)) return null;
       if (el.id) return `#${CSS.escape(el.id)}`;
-      if (el.name) return `${el.tagName.toLowerCase()}[name="${CSS.escape(el.name)}"]`;
+      if (el.name) return `${el.tagName.toLowerCase()}[name=\"${CSS.escape(el.name)}\"]`;
       const aria = el.getAttribute('aria-label');
-      if (aria) return `${el.tagName.toLowerCase()}[aria-label="${CSS.escape(aria)}"]`;
+      if (aria) return `${el.tagName.toLowerCase()}[aria-label=\"${CSS.escape(aria)}\"]`;
       const test = el.getAttribute('data-testid');
-      if (test) return `[data-testid="${CSS.escape(test)}"]`;
+      if (test) return `[data-testid=\"${CSS.escape(test)}\"]`;
       return null;
     };
     const emit = event => window.autoRecordEvent?.({ ...event, url: location.href, at: Date.now() });
     document.addEventListener('click', e => {
-      const el = e.target?.closest?.('button,a,input,textarea,select,[role="button"]');
+      const el = e.target?.closest?.('button,a,input,textarea,select,[role=\"button\"]');
       const selector = getSelector(el);
       if (selector) emit({ type: 'click', selector, text: (el.innerText || el.value || '').trim().slice(0, 120) });
     }, true);
@@ -147,7 +161,7 @@ async function injectRecorder() {
 }
 
 async function launchTorBrowser() {
-  let executablePath = getTorExecutablePath();
+  const executablePath = getTorExecutablePath();
   if (!executablePath) {
     const result = await dialog.showOpenDialog(win, {
       title: 'Select Tor Browser executable',
@@ -155,31 +169,44 @@ async function launchTorBrowser() {
       filters: [{ name: 'Tor Browser / Firefox executable', extensions: ['exe'] }]
     });
     if (result.canceled || !result.filePaths?.[0]) throw new Error('Tor Browser executable was not selected.');
-    executablePath = result.filePaths[0];
   }
 
-  send('browser-status', `Starting Tor Browser: ${executablePath}`);
+  const firefoxPath = getTorExecutablePath() || executablePath;
+  const root = getTorRoot(firefoxPath);
+  const launcherPath = getTorLauncherCandidates(firefoxPath).find(p => fs.existsSync(p));
+  if (!launcherPath) {
+    throw new Error(`Could not find the Tor Browser launcher next to ${firefoxPath}. Start Tor Browser normally once and try again.`);
+  }
 
-  const profile = getTorProfile(executablePath);
-  const args = [];
-  if (profile) args.push('-profile', profile);
+  const debugPort = Number(process.env.AUTO_TOR_DEBUG_PORT || 9222);
+  send('browser-status', `Starting Tor Browser through its official launcher: ${launcherPath}`);
 
   try {
-    const launched = await puppeteer.launch({
-      browser: 'firefox',
-      protocol: 'webDriverBiDi',
-      executablePath,
-      headless: false,
-      env: getTorEnvironment(executablePath),
-      args,
-      defaultViewport: null,
-      timeout: 30000
+    const env = getTorEnvironment(firefoxPath);
+    env.TOR_FORCE_NET_CONFIG = '0';
+    torLauncherProcess = spawn(launcherPath, [`--remote-debugging-port=${debugPort}`], {
+      cwd: root,
+      env,
+      windowsHide: false,
+      detached: false
     });
+
+    torLauncherProcess.on('error', error => {
+      send('browser-status', `Tor launcher error: ${error.message}`);
+    });
+
+    const connected = await waitForTorEndpoint(60000);
+    if (!connected) {
+      throw new Error(`Tor Browser started, but its WebDriver BiDi endpoint did not appear on localhost:${debugPort}. Make sure Tor finishes connecting before recording.`);
+    }
+
     browserOwnedByAuto = true;
-    send('browser-status', 'Started a new Tor Browser session');
-    return launched;
+    send('browser-status', `Connected to new Tor Browser session on port ${connected.port}`);
+    return connected.browser;
   } catch (error) {
-    throw new Error(`Could not start Tor Browser from ${executablePath}. ${error.message}`);
+    if (torLauncherProcess && !torLauncherProcess.killed) torLauncherProcess.kill();
+    torLauncherProcess = null;
+    throw new Error(`Could not start Tor Browser. ${error.message}`);
   }
 }
 
@@ -204,7 +231,7 @@ async function startBrowser(url) {
 
   browser = await getOrStartTorBrowser();
   const pages = await browser.pages();
-  page = pages[0] || await browser.newPage();
+  page = pages.find(p => p.url() && p.url() !== 'about:blank') || pages[0] || await browser.newPage();
   await injectRecorder();
   page.on('framenavigated', frame => {
     if (frame === page.mainFrame() && recording) {
@@ -277,6 +304,7 @@ ipcMain.handle('stop-browser', async () => {
   }
   browser = page = null;
   browserOwnedByAuto = false;
+  torLauncherProcess = null;
   send('browser-status', 'Auto disconnected from Tor Browser');
   return true;
 });
